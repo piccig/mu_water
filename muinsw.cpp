@@ -64,16 +64,22 @@ namespace PLMD{
     class muinsw : public Colvar {
       //      SwitchingFunction switchingFunction; //instance sw.f
       int gsz,func, Natoms, id, gsz2;
-      double l_func, sigma_LJ, eps_LJ, R_min, R_max, u,  r_cut, r_skin, coff, kT, r0, zdist, eps_Wall, sigma_Wall, r_cut_Wall, wallv;
+      double l_func, u,  coff, kT, zdist, eps_Wall, sigma_Wall, r_cut_Wall, wallv;
+      double qOO, qHH, qOH, C0, sigmaOO, sigmaHH, sigmaOH, epsilonOO, epsilonHH, epsilonOH, AOO, AHH, AOH, BOO, BHH, BOH;  //Potential parameters
+      double R_min_OO, R_min_HH, R_min_OH, R_max, r_cut, r_skin, r0;                                                       //Structural parameters
+      double V_minOO, V_minHH, V_minOH, dVmin_OO, dV_minHH, dV_minOH;                                                      //Potential parameters
+      double rtest, rstep, test_ph, test_ph_qs, test_dph, test_dph_qs                                                      //Potential testing tools
+      double Z0;
       bool vshift, issig, quad, nopbcz,gridfile;
-      vector<double> LJpar;
+      vector<double> TIP3Pcharge;
+      vector<double> TIP3Psigma;
+      vector<double> TIP3Pepsilon;
       vector<double> Wallpar;
       vector<double> LJr;
       vector<Vector> grid_in;
       vector<double> grid_w;
       vector<int> griddim;
       vector<AtomNumber> at_list;
-      double Z0;
       
       // verlet list structure
       
@@ -99,9 +105,13 @@ namespace PLMD{
       double phi(double rq, double rmin, double rmax, double sigma, double eps, double Vmax, double Vshift);
       double phis(double rq, double r, double rmin, double rmax, double sigma, double eps, double Vmax, double Vshift, double r0, bool issig, double coff);
       double phiq(double rq, double r, double rmin, double rmax, double sigma, double eps, double Vmax, double Vshift, double dmin);
+      double phi_tip3p_qs(double r, double rmin, double rmax, double qq, double Apar, double Bpar, double coff, double Vmin, double dmin){
+      double dphi_tip3p(double r, double qq, double Apar, double Bpar){
       double dphi(double rq, double r, double rmin, double rmax, double sigma, double eps);
       double dphis(double rq, double r, double rmin, double rmax, double sigma, double eps, double Vmax, double Vshift, double r0, bool issig, double coff);
       double dphiq(double rq, double r, double rmin, double rmax, double sigma, double eps, double dmin);
+      double dphi_tip3p(double r, double qq, double Apar, double Bpar){
+      double dphi_tip3p_qs(double r, double rmin, double rmax, double qq, double Apar, double Bpar, double coff, double Vmax, double dmin){
       void du_newlist(vector<AtomNumber> &list, vector<Vector> &grid, dulist_s &dulist);
       void du_checklist(vector<AtomNumber> &list, vector<Vector> &grid, dulist_s &dulist);
       
@@ -117,10 +127,14 @@ namespace PLMD{
     void muinsw::registerKeywords(Keywords& keys){
       Colvar::registerKeywords(keys);
       keys.add("atoms","GROUP","the group of atoms we are calculating the dipole moment for");
-      keys.add("optional","LJPAR","Lennard-Jones Parameters (default:  sigmaLJ = 0.3405 nm\t eps_LJ = 0.996 kJ/mol)");
-      keys.add("optional","LJR","Lennard-Jones radii (default: R_min = 0.9*sigmaLJ \t R_max = 1.25 nm");
+      keys.add("optional","CHARGES","TIP3P charges (default:   qO = -0.834 C\t qH = 0.417 C)");
+      keys.add("optional","LJSIGMA","TIP3P LJ sigma parameters (default:   sigmaOO = 0.31507 nm\t sigmaHH = 0.04000 nm\t sigmaOH = 0.17753 nm)");
+      keys.add("optional","LJEPSILON","TIP3P LJ epsilon parameters (default:   epsilonOO = 0.63681228 kJ/mol\t epsilonHH = 0.19259280 kJ/mol\t epsilonOH = 0.35001648 kJ/mol)");
+      keys.add("optional","LJR","Lennard-Jones radii (default: R_min = 0.9*sigmaLJ \t R_max =  0.18 nm");
       keys.add("optional","R_CUT","Verlet lists, default r_cut = R_max");
       keys.add("optional","R_0","For continuous shift to soft-core");
+      keys.add("optional","R_SWITCH","Distance at which the long-range switching function starts to act up to R_MAX (default: 0.9*R_MAX)");
+      keys.add("optional","MAX_DER","Max gradient value determining soft-core threshold (default: max_der = -400 kJ/mol AA");
       keys.addFlag("VSHIFT",false,"Set to TRUE if you want to shift the LJ potential to be 0 at the cut-off");
       keys.addFlag("SIG",false,"Set to TRUE if you want sigmoid switch for continuous derivatives (useless if R_0 is not set)");
       keys.addFlag("QUAD",false,"Set to TRUE if for the quadratic soft-core (R_0 will be ignored)");
@@ -167,26 +181,165 @@ namespace PLMD{
       //log check
       
       log.printf("gridsize:\t%d\n",gsz);
-                      
+
+
+      //TIP3P parameters
+      
+      //Coulomb parameters
+      TIP3Pcharge.resize(2);
+      TIP3Pcharge[0] = -0.834;   //Oxygen charge (C)
+      TIP3Pcharge[1] =  0.417;   //Hydrogen charge
+      paerseVector("CHARGES",TIP3Pcharge);
+      C0  = 139.028429916;                  //Electrostatic constant x squared electron charge in kJ/mol*nm --> 332.0637 (kcal/mol*AA) * 4.1868 J->cal * 0.1 AA->nm
+      qOO = C0*TIP3Pcharge[0]*TIP3Pcharge[0];  //Product of charges 
+      qHH = C0*TIP3Pcharge[1]*TIP3Pcharge[1];  //
+      qOH = C0*TIP3Pcharge[0]*TIP3Pcharge[1];  //
+
       //LJ parameters  
       
-      LJpar.resize(2);
-      LJpar[0] = 0.996; //kJ/mol at 88K
-      LJpar[1] = 0.3405; //LJ parameters 
-      parseVector("LJPAR",LJpar);
-      eps_LJ = LJpar[0];
-      sigma_LJ = LJpar[1];
-      
-      LJr.resize(2);
-      LJr[0] = 0.9*sigma_LJ; //nm
-      LJr[1] = 1.25; //
-      parseVector("LJR",LJr);
-      R_min = LJr[0];
-      R_max = LJr[1];
-      
+      //sigma
+      TIP3Psigma.resize(3);
+      TIP3Psigma[0] = 0.31507;    //O-O LJ sigma in nm
+      TIP3Psigma[1] = 0.04000;    //H-H LJ sigma in nm
+      TIP3Psigma[2] = 0.17753;    //O-H LJ sigma in nm
+      parseVector("LJSIGMA",TIP3Psigma);
+      sigmaOO = TIP3Psigma[0];
+      sigmaHH = TIP3Psigma[1];
+      sigmaOH = TIP3Psigma[2];
+
+      //epsilon
+      TIP3Pepsilon.resize(3);
+      TIP3Pepsilon[0] = 0.63681228;  //O-O LJ epsilon in kJ/mol 
+      TIP3Pepsilon[1] = 0.19259280;  //H-H LJ epsilon in kJ/mol
+      TIP3Pepsilon[2] = 0.35001648;  //O-H LJ epsilon in kJ/mol
+      parseVector("LJESPILON",TIP3Pepsilon);
+      epsilonOO = TIP3Pepsilon[0];
+      epsilonHH = TIP3Pepsilon[1];
+      epsilonOH = TIP3Pepsilon[2];
+
+      //LJ AB parameters
+      AOO = 4.0*epsilonOO*pow(sigmaOO,12.0);  // A = 4*eps*sig^12
+      AHH = 4.0*epsilonHH*pow(sigmaHH,12.0);
+      AOH = 4.0*epsilonOH*pow(sigmaOH,12.0);
+   
+      BOO = 4.0*epsilonOO*pow(sigmaOO,6.0);   // B = 4*eps*sig^6 
+      BHH = 4.0*epsilonHH*pow(sigmaHH,6.0);
+      BOH = 4.0*epsilonOH*pow(sigmaOH,6.0);
+
+      //LJr.resize(2);
+      //LJr[0] = 0.9*sigma_LJ; //nm
+      //LJr[1] = 1.25; //
+      //parseVector("LJR",LJr);
+      R_max = 0.18;   //R_max defined the region for switching to zero the potential tail, default 18 AA
+
+      //Calculate single atom-atom interaction gradient cut-off
+      //Can be better done, this is just for testing
+      max_der = -400.0;
+      parse("MAX_DER",max_der);
+
+      rtest = R_max;
+      rstep = 0.01;    //Just for test purpose
+      for(;;){
+         rtest -= rstep;
+         test_dph = dphi_tip3p(rtest,qOO,AOO,BOO);
+         test_ph  =  phi_tip3p(rtest,qOO,AOO,BOO);
+         if(test_dph > max_der){
+           continue;
+         }else{
+          R_minOO  = rtest;
+          V_minOO  = test_ph;
+          dV_minOO = test_dph;
+          break;
+         }
+      }
+
+      rtest = R_max;
+      rstep = 0.01;    //Just for test purpose
+      for(;;){
+         rtest -= rstep;
+         test_dph = dphi_tip3p(rtest,qHH,AHH,BHH);
+         test_ph  =  phi_tip3p(rtest,qHH,AHH,BHH);
+         if(test_dph > max_der){
+           continue;
+         }else{
+          R_minHH  = rtest;
+          V_minHH  = test_ph;
+          dV_minHH = test_dph;
+          break;
+         }
+      }
+
+      rtest = R_max;
+      rstep = 0.01;    //Just for test purpose
+      for(;;){
+         rtest -= rstep;
+         test_dph = dphi_tip3p(rtest,qOH,AOH,BOH);
+         test_ph  =  phi_tip3p(rtest,qOH,AOH,BOH);
+         if(test_dph > max_der){
+           continue;
+         }else{
+          R_minOH  = rtest;
+          V_minOH  = test_ph;
+          dV_minOH = test_dph;
+          break;
+         }
+      }
+
+      //exponential cutoff (default = 300.0)
+      coff=300.0;
+      parse("COFF",coff);
+
       //log check
-      log.printf("LJ parameters:\teps_LJ = %.4f\tsigma_LJ = %.4f\n",eps_LJ,sigma_LJ);
-      log.printf("LJ radii:\tR_min = %.4f\tR_max = %.4f\n",R_min,R_max);
+      log.printf("Cut-off = %.4f kT\n",coff);
+
+
+      //////////////// CHECK POTENTIALS //////////////
+      rtest = 0.1;
+      rstep = 0.01;
+      ofstream potoo;
+      potoo.open("PotOO.dat"); //file 
+      ofstream potoo;
+      pothh.open("PotHH.dat"); //file 
+      ofstream pothh;
+      potoh.open("PotOH.dat"); //file 
+      for(;;){
+         rtest += rstep;
+         test_ph     = phi_tip3p(rtest,qOO,AOO,BOO);
+         test_ph_qs  = phi_tip3p_qs(rtest,R_minOO,R_max,qOO,AOO,BOO,coff,V_minOO,dV_minOO);
+         test_dph    = dphi_tip3p(rtest,qOO,AOO,BOO);
+         test_dph_qs = dphi_tip3p_qs(rtest,R_minOO,R_max,qOO,AOO,BOO,coff,V_minOO,dV_minOO);
+         potoo << rtest << "\t" << test_ph << "\t" << test_dph << "\t" << test_ph_qs << "\t" << test_dph_qs << endl; //O-O potential
+
+         test_ph     = phi_tip3p(rtest,qHH,AHH,BHH);
+         test_ph_qs  = phi_tip3p_qs(rtest,R_minHH,R_max,qHH,AHH,BHH,coff,V_minHH,dV_minHH);
+         test_dph    = dphi_tip3p(rtest,qHH,AHH,BHH);
+         test_dph_qs = dphi_tip3p_qs(rtest,R_minHH,R_max,qHH,AHH,BHH,coff,V_minHH,dV_minHH);
+         pothh << rtest << "\t" << test_ph << "\t" << test_dph << "\t" << test_ph_qs << "\t" << test_dph_qs << endl; //H-H potential
+
+         test_ph     = phi_tip3p(rtest,qOH,AOH,BOH);
+         test_ph_qs  = phi_tip3p_qs(rtest,R_minOH,R_max,qOH,AOH,BOH,coff,V_minOH,dV_minOH);
+         test_dph    = dphi_tip3p(rtest,qHH,AHH,BHH);
+         test_dph_qs = dphi_tip3p_qs(rtest,R_minOH,R_max,qOH,OHH,BOH,coff,V_minOH,dV_minOH);
+         potoh << rtest << "\t" << test_ph << "\t" << test_dph << "\t" << test_ph_qs << "\t" << test_dph_qs << endl; //O-H potential
+
+         if(rstep > R_max){
+           break;
+         }else{
+          continue;
+         }
+      }
+      potoo.close();
+      pothh.close();
+      potoh.close();
+
+      /////////////// END CHECK POTENTIALS ////////////
+       
+      //log check
+      log.printf("TIP3P Coulomb parameters:\tqO = %.4f\tqH = %.4f\n",TIP3Pcharge[0],TIP3Pcharge[1]);
+      log.printf("TIP3P LJ sigma parameters:\tsigmaOO = %.4f\tsigmaHH = %.4f\tsigmaOH = %.4f\n",sigmaOO,sigmaHH,sigmaOH);
+      log.printf("TIP3P LJ epsilon parameters:\tepsilonOO = %.4f\tepsilonHH = %.4f\tepsilonOH = %.4f\n",epsilonOO,epsilonHH,epsilonOH);
+      log.printf("SOFT-CORE radii:\tR_min O-O = %.4f\tR_min H-H = %.4f\tR_min O-H = %.4f\n",R_minOO,R_minHH,R_minOH);
+      log.printg("LONG_RANGE switching:\tR_max = %.4f\n",R_max);
       
       //CHANGE add Coulombic potential parameters
 
@@ -225,7 +378,11 @@ namespace PLMD{
       parse("R_CUT",r_cut);
       r_skin=1.25*R_max; 
       parse("R_SKIN",r_skin);
-      
+      r_switch=0.9*R_max;
+      parse("R_SWITCH",r_switch);
+      if(r_switch>=R_max){
+        log.printf("Error, R_SWITCH>R_CUT, this cannot be!");
+      }
       
       //log check
       log.printf("Verlet list:\tR_cut = %.4f\tR_skin = %.4f\n",r_cut,r_skin);
@@ -258,16 +415,6 @@ namespace PLMD{
       
       kT=0.73167; 
       parse("KT",kT);
-      
-      //log check
-      log.printf("kT = %.4f\tkJ/mol",kT);
-      
-      //exponential cutoff (default = 300.0)
-      coff=300.0; 
-      parse("COFF",coff);
-      
-      //log check
-      log.printf("Cut-off = %.4f kT\n",coff);
       
       checkRead();
       addValueWithDerivatives(); 
@@ -464,6 +611,77 @@ namespace PLMD{
       }
       return(dphi);
     }
+
+    //TIP3P Potential w/ quadratic soft-core and sigmoidla long-range switching
+    double muinsw::phi_tip3p_qs(double r, double rmin, double rmax, double qq, double Apar, double Bpar, double coff, double Vmin, double dmin){
+      double phi, ph, r6, r12;
+      if(r <= rmin){
+        phi=0.5*dmin*(r*r/rmin-rmin)+Vmin; 
+      }else if(r >= rmax){
+        r6  = pow(r,6.0);
+        r12 = pow(r,12.0);
+        ph  = qq/r + Apar/r12 - Bpar/r6;
+        double Z0=0.5*(r_switch+rmax);
+        double w=0.05*(rmax-r_switch);
+        double z=(r-Z0)/w;
+        double soff=swfoff(z,coff);
+        phi=ph*soff;
+      }else{
+        r6  = pow(r,6.0);
+        r12 = pow(r,12.0);
+        phi = qq/r + Apar/r12 - Bpar/r6;
+      }
+      return(phi);
+    }
+
+    //TIP3P Potential derivative w/ quadratic soft-core and sigmoidla long-range switching
+    double muinsw::dphi_tip3p_qs(double r, double rmin, double rmax, double qq, double Apar, double Bpar, double coff, double Vmax, double dmin){
+      double dphi, dph, ph, r6, r7, r12, r13;
+      if(r <= rmin){
+        dphi=dmin*r/rmin;
+      }else if(r >= rmax){
+        r2  = pow(r,2.0);
+        r6  = pow(r,6.0);
+        r7  = pow(r,7.0);
+        r12 = pow(r,12.0);
+        r13 = pow(r,13.0);
+        ph  = qq/r + Apar/r12 - Bpar/r6;
+        dph = -qq/r2 - 12.0*Apar/r13 + 6.0*Bpar/r7
+        double Z0=0.5*(r_switch+rmax);
+        double w=0.05*(rmax-r_switch);
+        double z=(r-Z0)/w;
+        double soff=swfoff(z,coff);
+        double ds=dswf(z,coff)*w;
+        dphi=ph*ds+dph*soff;
+      }else{
+        r2  = pow(r,2.0);
+        r7  = pow(r,7.0);
+        r13 = pow(r,13.0);
+        dphi = -qq/r2 - 12.0*Apar/r13 + 6.0*Bpar/r7
+      }
+      return(dphi);
+    }
+
+
+    //TIP3P test for cut-off calculation
+    double muinsw::phi_tip3p(double r, double qq, double Apar, double Bpar){
+      double phi, r6, r12;
+      r6  = pow(r,6.0);
+      r12 = pow(r,12.0);
+      phi = qq/r + Apar/r12 - Bpar/r6;
+      return(phi);
+    }
+                                      
+
+    //TIP3P derivative test for cut-off calculation
+    double muinsw::dphi_tip3p(double r, double qq, double Apar, double Bpar){
+      double dphi, r2, r7, r13;
+      r2  = pow(r,2.0);
+      r7  = pow(r,7.0);
+      r13 = pow(r,13.0);
+      dphi = -qq/r2 - 12.0*Apar/r13 + 6.0*Bpar/r7
+      return(dphi);
+    }
     
     
 
@@ -576,21 +794,24 @@ namespace PLMD{
 	  }
      
       //CHANGE define possible insertion configurations (per grid point) 
+
+
+//Vshift is not used (fermi-swtiching funct instead, Vmax defined at the beginning
       
-      //initialize potential 
-      double Vshift;
-      if(vshift){
-	Vshift=phi(R_max*R_max, 0.0, R_max+1., sigma_LJ, eps_LJ, 0.0, 0.0);
-      }else{
-	Vshift=0;
-      }
-      
-      double Vmax;
-      if(r0>0.0){
-	Vmax=phi(r0*r0, 0.0, R_max, sigma_LJ, eps_LJ, 0.0, Vshift);
-      }else{
-	Vmax=phi(R_min*R_min, 0.0, R_max, sigma_LJ, eps_LJ, 0.0, Vshift);
-      }
+//      //initialize potential 
+//      double Vshift;
+//      if(vshift){
+//       Vshift=phi(R_max*R_max, 0.0, R_max+1., sigma_LJ, eps_LJ, 0.0, 0.0);
+//      }else{
+//	Vshift=0;
+//      }
+//      
+//      double Vmax;
+//      if(r0>0.0){
+//        Vmax=phi(r0*r0, 0.0, R_max, sigma_LJ, eps_LJ, 0.0, Vshift);
+//      }else{
+//        Vmax=phi(R_min*R_min, 0.0, R_max, sigma_LJ, eps_LJ, 0.0, Vshift);
+//      }
 
       double dmin;
       if(quad) dmin=dphi(R_min*R_min, R_min, 0.0, R_max, sigma_LJ, eps_LJ);
