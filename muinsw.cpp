@@ -147,15 +147,14 @@ namespace PLMD{
       keys.add("optional","R_SKIN","Verlet lists, default r_skin = 1.25 R_max");
       keys.add("compulsory","GRID","space grid");
       keys.addFlag("GRIDFILE",false,"the space grid is read from an input file grid.dat");
-      keys.addFlag("RIGID",false,"The distances in inserted vector are rigid");
       keys.add("optional","KT","kT, default 0.73167 kJ/mol =>  88 K");
       keys.add("optional","COFF_DU","cutoff exp(-beta*Du)");
       keys.add("optional","COFF_SWITCH","cutoff switching function");
 
       //CHANGES
       keys.add("compulsory","INSERT","Molecule file containing the inserted molecule geometry and masses.");
-      keys.add("optional","INANG","Angle file containing the rotations for the test insertion of the molecule.");
-
+      keys.add("optional","ROTATE","Angle file containing the rotations for the test insertion of the molecule.");
+      keys.addFlag("RIGID",false,"The distances in inserted vector are rigid"); 
 
       keys.remove("NOPBC");
     }
@@ -240,7 +239,7 @@ namespace PLMD{
       //Rotations: generate N ins_r[i] vectors, to be used for the insertion in each gridpoint
       //The ins_r[i] vectors can be generated via input, or via random direction generation
       string inang;
-      parse("INANG",inang);
+      parse("ROTATE",inang);
       inangles.open(inang.c_str());
       Nrot=0;
       if(!inangles.is_open()){
@@ -251,7 +250,6 @@ namespace PLMD{
 	while(!inangles.eof()){ //count lines
 	  Vector theta;
 	  inangles >> theta[0] >> theta[1] >> theta[2];
-	  log.printf("%d alpha %.4f\t beta %.4f \t gamma %.4f\n",Nrot+1,theta[0], theta[1],theta[2]);
 	  getline(inangles,buff); 
 	  if(!inangles.eof()){ //generate Nrot-th rotation
 	    //collect rotation angle arrays
@@ -267,11 +265,13 @@ namespace PLMD{
       //ROTATE ins_r
       if(Nrot>0){
 	for(int i=0; i<Nrot; i++){
-	  for(int j=0; j<Nat; j++){
-	    Vector vout;
-	    rotate(ins_rot[i],ins_r[j],vout);
-	    ins_r.push_back(vout);
-	    log.printf("Rotation %d - %d x = %.4f\ty = %.4f\tz = %.4f\n",i+1,j,ins_r[i][0],ins_r[i][1],ins_r[i][2]);
+            log.printf("Rotation %d : R_X %.4f\t R_Z %.4f \t R_X %.4f [degrees]\n",i+1,ins_rot[i][0], ins_rot[i][1],ins_rot[i][2]);
+            ins_rot[i] = ins_rot[i]*M_PI/180.0; //insertion angles in radiants;
+            for(int j=0; j<Nat; j++){
+	      Vector vout;
+	      rotate(ins_rot[i],ins_r[j],vout);
+	      ins_r.push_back(vout);
+	      log.printf("\tAtom %d : x = %.4f\ty = %.4f\tz = %.4f\n",j,ins_r[(i+1)*Nat+j][0],ins_r[(i+1)*Nat+j][1],ins_r[(i+1)*Nat+j][2]);
 	  }
 	}
       }
@@ -528,6 +528,7 @@ namespace PLMD{
 	c[i]=cos(angle[i]);
 	s[i]=sin(angle[i]);
       }
+      //XZX rotation proper euler angles
       Tensor R = Tensor(c[1],-c[2]*s[1],s[1]*s[2],c[0]*s[1],c[0]*c[1]*c[2]-s[0]*s[2],-c[2]*s[0]-c[0]*c[1]*s[2],s[0]*s[1],c[0]*s[2]+c[1]*c[2]*s[0],c[0]*c[2]-c[1]*s[0]*s[2]);
       vout = matmul(R,vin);
     }
