@@ -90,7 +90,7 @@ namespace PLMD{
       vector<Vector> ins_r;
       vector<Vector> ins_s;
       vector<Vector> ins_rot;
-      vector<int>    sp_ins;
+      vector<string> sp_ins;
       // verlet list structure
       
       struct  dulist_s{
@@ -129,7 +129,7 @@ namespace PLMD{
       ofstream rdbg;
       ifstream inmol;
       ifstream inangles;
-      };
+    };
 
     PLUMED_REGISTER_ACTION(muinsw,"MUINSW")
 
@@ -197,25 +197,25 @@ namespace PLMD{
       }else{
 	Nat=0; //number of atoms equals number of lines
 	Mtot=0; //Total mass
-	string buff;
 	rcom.zero();
-	while(!inmol.eof()){ //count lines
+	string buff;
+	inmol >> Nat;
+	getline(inmol,buff); //next line
+	getline(inmol,buff); //skip comment line
+	while(!inmol.eof()){ 
+	  string Symbol;
 	  double Mass;
 	  Vector r;
-	  inmol >> Mass >> r[0] >> r[1] >> r[2];
+	  inmol >> Symbol >> r[0] >> r[1] >> r[2] >> Mass;
 	  getline(inmol,buff); 
-          r = r*0.1;       //Read from Angstrom coord
+          r = r*0.1;       //Read from Angstrom coordi
 	  if(!inmol.eof()){//fill arrays and compute rcom
+	    sp_ins.push_back(Symbol);
 	    ins_m.push_back(Mass);
-            if(Mass >= 10.0){
-               sp_ins.push_back(0);
-            }else{
-               sp_ins.push_back(1);
-            }  
 	    ins_r.push_back(r);
 	    rcom += Mass*delta(ins_r[0],ins_r[Nat]) ; 
 	    Mtot+=Mass;
-	    Nat++;
+	    //Nat++;
 	  }
 	}
 	rcom = rcom/Mtot + ins_r[0];
@@ -227,7 +227,7 @@ namespace PLMD{
       log.printf("Com in %.4f,%.4f,%.4f and total mass %.4f (uma).\n",rcom[0],rcom[1],rcom[2],Mtot);
       Maxri=0.0;
       for(int i=0; i<Nat; i++){
-	log.printf("Atom %d:  M = %.4f \tx = %.4f\ty = %.4f\tz = %.4f\n",ins_m[i],ins_r[i][0],ins_r[i][1],ins_r[i][2]);
+	log.printf("Atom %d: %s  M = %.4f \tx = %.4f\ty = %.4f\tz = %.4f\n",i,sp_ins[i].c_str(),ins_m[i],ins_r[i][0],ins_r[i][1],ins_r[i][2]);
 	ins_r[i] = delta(rcom,ins_r[i]);
 	log.printf("In COM reference: \tx = %.4f\ty = %.4f\tz = %.4f\n",ins_r[i][0],ins_r[i][1],ins_r[i][2]);
 	//log.printf("Scaled: \tx = %.4f\ty = %.4f\tz = %.4f\n",ins_s[i][0],ins_s[i][1],ins_s[i][2]);
@@ -611,7 +611,7 @@ namespace PLMD{
         double w=0.05*(rmax-r_switch);
         double z=(r-Z0)/w;
         double soff=swfoff(z,coff);
-        double ds=-dswf(z,coff)*w;
+        double ds=-dswf(z,coff)/w;
         dphi=ph*ds+dph*soff;
       }else{
         r2  = pow(r,2.0);
@@ -776,7 +776,8 @@ namespace PLMD{
       double Su=0;
       double Du,modrkj,modq,zu,fDu,dfDu, ph;
       Vector rkj;
-      int atomid, sp_real;
+      int atomid;
+      string sp_real;
       double beta=1./kT;
       
       double invM=1./gsz/Nconf;  //Number of insertions
@@ -830,9 +831,9 @@ namespace PLMD{
 	      double ph,dph;
               mass_real = getMass(atomid); 
               if(mass_real >= 10.){
-                sp_real = 0;
+                sp_real = "O";
               }else{
-                sp_real = 1;
+                sp_real = "H";
               }
 
 	      if(sp_real != sp_ins[k]){
@@ -844,7 +845,7 @@ namespace PLMD{
                   dph = dphi_tip3p(modrkj, qOH, AOH, BOH);
                 }
               }else{
-                   if(sp_real == 0){
+                   if(sp_real == "O"){
                      if(quad){
                        ph  =  phi_tip3p_qs(modrkj, R_minOO, R_max, qOO, AOO, BOO, coff_switch, V_minOO, dV_minOO, r_switch);
                        dph = dphi_tip3p_qs(modrkj, R_minOO, R_max, qOO, AOO, BOO, coff_switch, V_minOO, dV_minOO, r_switch);
