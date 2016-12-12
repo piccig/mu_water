@@ -63,14 +63,14 @@ namespace PLMD{
    
     class muinsw : public Colvar {
       //      SwitchingFunction switchingFunction; //instance sw.f
-      int gsz,func, Natoms, id, gsz2, Nrot, Nconf;
+      int gsz,func, Natoms, id, gsz2, Nrot, Nran, Nconf;
       double l_func, u,  coff_Du, coff_switch, kT, zdist, eps_Wall, sigma_Wall, r_cut_Wall, wallv;
       double qOO, qHH, qOH, C0, sigmaOO, sigmaHH, sigmaOH, epsilonOO, epsilonHH, epsilonOH, AOO, AHH, AOH, BOO, BHH, BOH;  //Potential parameters
       double R_minOO, R_minHH, R_minOH, R_max, r_cut, r_skin, r0, r_switch;                                                       //Structural parameters
       double max_der, V_minOO, V_minHH, V_minOH, dV_minOO, dV_minHH, dV_minOH;                                                      //Potential parameters
       double rtest, rstep, test_ph, test_ph_qs, test_dph, test_dph_qs;                                                      //Potential testing tools
       double Z0;
-      bool quad, nopbcz, gridfile, rigid;
+      bool quad, nopbcz, gridfile, rigid, random_rot;
       vector<double> TIP3Pcharge;
       vector<double> TIP3Psigma;
       vector<double> TIP3Pepsilon;
@@ -141,6 +141,7 @@ namespace PLMD{
       keys.add("optional","LJEPSILON","TIP3P LJ epsilon parameters (default:   epsilonOO = 0.63681228 kJ/mol\t epsilonHH = 0.19259280 kJ/mol\t epsilonOH = 0.35001648 kJ/mol)");
       keys.add("optional","LJR","Lennard-Jones radii (default: R_min = 0.9*sigmaLJ \t R_max =  0.18 nm");
       keys.add("optional","R_CUT","Verlet lists, default r_cut = R_max");
+      keys.add("optional","R_MAX","Cut-off for the potential, default R_max = 1.8 nm");
       keys.add("optional","R_SWITCH","Distance at which the long-range switching function starts to act up to R_MAX (default: 0.9*R_MAX)");
       keys.add("optional","MAX_DER","Max gradient value determining soft-core threshold (default: max_der = -400 kJ/mol AA");
       keys.addFlag("QUAD",false,"Set to TRUE if for the quadratic soft-core (R_0 will be ignored)");
@@ -154,6 +155,7 @@ namespace PLMD{
       //CHANGES
       keys.add("compulsory","INSERT","Molecule file containing the inserted molecule geometry and masses.");
       keys.add("optional","ROTATE","Angle file containing the rotations for the test insertion of the molecule.");
+      keys.add("optional","NRAN","Numer of randomly generated rotations per grid point (default NRAN = 1).");
       keys.addFlag("RIGID",false,"The distances in inserted vector are rigid"); 
 
       keys.remove("NOPBC");
@@ -202,6 +204,7 @@ namespace PLMD{
 	inmol >> Nat;
 	getline(inmol,buff); //next line
 	getline(inmol,buff); //skip comment line
+	int count=0;
 	while(!inmol.eof()){ 
 	  string Symbol;
 	  double Mass;
@@ -213,9 +216,9 @@ namespace PLMD{
 	    sp_ins.push_back(Symbol);
 	    ins_m.push_back(Mass);
 	    ins_r.push_back(r);
-	    rcom += Mass*delta(ins_r[0],ins_r[Nat]) ; 
+	    rcom += Mass*delta(ins_r[0],ins_r[count]) ; 
 	    Mtot+=Mass;
-	    //Nat++;
+	    count++;
 	  }
 	}
 	rcom = rcom/Mtot + ins_r[0];
@@ -240,24 +243,48 @@ namespace PLMD{
       //The ins_r[i] vectors can be generated via input, or via random direction generation
       string inang;
       parse("ROTATE",inang);
-      inangles.open(inang.c_str());
-      Nrot=0;
-      if(!inangles.is_open()){
-	log.printf("Insertion angles file not found, molecule will not be rotated.\n");
+      if(inang == "random"){
+         random_rot = true;
+        // Generate random Euler angles according to Kuffner. J, Proc.2004 IEEE In'l Conf. on Robotics and Automation (ICRA 2004)
+        Nran = 1;
+        parse("NRAN",Nran);
+        Nrot = Nran*gsz;
+        for(int i=0; i<Nrot; i++){
+           Vector theta;
+           log.printf("PI in PLUMED = %.4f \t Random number = %.4f \n", M_PI, drand48());
+           theta[0] = 2.0*M_PI*drand48()-M_PI;
+           theta[1] = acos(1.0-2.0*drand48())+M_PI/2.0;
+           if(rand() < 0.5){
+             if(theta[1] < M_PI){
+               theta[1] = theta[1]+M_PI;
+             }else{
+               theta[1] = theta[1]-M_PI;
+             }    
+           }
+           theta[2] = 2.0*M_PI*drand48()-M_PI;
+           ins_rot.push_back(theta*180.0/M_PI);
+        }
       }else{
-	string buff;
-	log.printf("The following rotations are tested:\n");
-	while(!inangles.eof()){ //count lines
-	  Vector theta;
-	  inangles >> theta[0] >> theta[1] >> theta[2];
-	  getline(inangles,buff); 
-	  if(!inangles.eof()){ //generate Nrot-th rotation
-	    //collect rotation angle arrays
-	    ins_rot.push_back(theta);
-	    Nrot++;
+         random_rot = false;
+        inangles.open(inang.c_str());
+        Nrot=0;
+        if(!inangles.is_open()){
+          log.printf("Insertion angles file not found, molecule will not be rotated.\n");
+        }else{
+          string buff;
+          log.printf("The following rotations are tested:\n");
+          while(!inangles.eof()){ //count lines
+            Vector theta;
+            inangles >> theta[0] >> theta[1] >> theta[2];
+            getline(inangles,buff); 
+            if(!inangles.eof()){ //generate Nrot-th rotation
+	      //collect rotation angle arrays
+	      ins_rot.push_back(theta);
+	      Nrot++;
+	    }
 	  }
-	}
-	inangles.close();
+          inangles.close();
+        }
       }
       
       //CHANGE automatic generation of rotations & random generation (for WIDOM)
@@ -326,6 +353,7 @@ namespace PLMD{
       BOH = 4.0*epsilonOH*pow(sigmaOH,6.0);
 
       R_max = 1.8;   //R_max defined the region for switching to zero the potential tail, default 18 AA
+      parse("R_MAX",R_max);
       //log check
       log.printf("Cut-off  radius= %.4f nm\n",R_max);
 
@@ -766,7 +794,91 @@ namespace PLMD{
 	  }
 	}
       }
-     
+
+      if(dulist.step==0){
+        if(random_rot){
+          log.printf("Nran :\t%d\n",Nran);
+          for(c=0; c<Nran; c++){
+             std::ostringstream fn;
+             fn << "Grid_" << c+1 << ".xyz";
+             ofstream grid_conf;
+             grid_conf.open(fn.str().c_str(),std::ios_base::binary);
+             grid_conf << Nat*gsz << endl;
+             grid_conf << "Grid configuration = "<< "\t" << c+1 << endl;
+             for(i=0; i<gsz; ++i){
+                for(k=0; k<Nat; ++k){
+                   Vector ins_test;
+                   if(rigid) {
+                     ins_test=xgrid[i]+ins_r[k+i*Nat+c*gsz*Nat]; //insertion vector (rigid)
+                   }else{
+                     ins_test=xgrid[i]+getPbc().scaledToReal(ins_s[k+i*Nat+c*gsz*Nat]); //insertion vector (scaled)
+                   }
+                   grid_conf << sp_ins[k] << "\t" << ins_test*10.0 << endl; //H-H potential
+                }
+             } 
+             grid_conf.close();
+          }
+        }else{
+          log.printf("Nconf :\t%d\n",Nconf);
+          for(c=0; c<Nconf; c++){
+             std::ostringstream fn;
+             fn << "Grid_" << c+1 << ".xyz";
+             ofstream grid_conf;
+             grid_conf.open(fn.str().c_str(),std::ios_base::binary);  
+             grid_conf << Nat*gsz << endl;
+             grid_conf << "Grid configuration = "<< "\t" << c+1 << endl;
+             for(i=0; i<gsz; ++i){
+                for(k=0; k<Nat; ++k){
+                   Vector ins_test;
+                   if(rigid) {
+                     ins_test=xgrid[i]+ins_r[k+c*Nat]; //insertion vector (rigid)
+                   }else{
+                     ins_test=xgrid[i]+getPbc().scaledToReal(ins_s[k+c*Nat]); //insertion vector (scaled)
+                   }
+                   grid_conf << sp_ins[k] << "\t" << ins_test*10.0 << endl; //H-H potential
+                }
+             }
+             grid_conf.close();
+          }
+        }
+      }else{
+        if(random_rot){
+          for(c=0; c<Nran; c++){
+             for(i=0; i<gsz; ++i){
+                for(k=0; k<Nat; ++k){
+                   Vector ins_test;
+                   if(rigid) {
+                     ins_test=xgrid[i]+ins_r[k+i*Nat+c*gsz*Nat]; //insertion vector (rigid)
+                   }else{
+                     ins_test=xgrid[i]+getPbc().scaledToReal(ins_s[k+i*Nat+c*gsz*Nat]); //insertion vector (scaled)
+                   }
+                }
+             }
+          }
+        }else{
+          for(c=0; c<Nconf; c++){
+             for(i=0; i<gsz; ++i){
+                for(k=0; k<Nat; ++k){
+                   Vector ins_test;
+                   if(rigid) {
+                     ins_test=xgrid[i]+ins_r[k+c*Nat]; //insertion vector (rigid)
+                   }else{
+                     ins_test=xgrid[i]+getPbc().scaledToReal(ins_s[k+c*Nat]); //insertion vector (scaled)
+                   }
+                }
+             }
+          }
+        }
+      }
+
+
+
+
+
+
+
+
+
       //create neigh lists  
       
       if(dulist.step==0) newlist(xgrid,dulist);
