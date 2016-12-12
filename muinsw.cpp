@@ -93,6 +93,10 @@ namespace PLMD{
       vector<string> sp_ins;
       // verlet list structure
       
+      //WIDOM & RANDOM grid
+      bool randomgrid,widom;      
+      vector<Vector> sgrid;
+
       struct  dulist_s{
 	
 	double rcut;
@@ -155,7 +159,8 @@ namespace PLMD{
       keys.add("compulsory","INSERT","Molecule file containing the inserted molecule geometry and masses.");
       keys.add("optional","ROTATE","Angle file containing the rotations for the test insertion of the molecule.");
       keys.addFlag("RIGID",false,"The distances in inserted vector are rigid"); 
-
+      keys.addFlag("RANDOMGRID",false,"random uniform grid.");
+      keys.addFlag("WIDOM",false,"generates a random uniform grid.");
       keys.remove("NOPBC");
     }
     
@@ -183,9 +188,39 @@ namespace PLMD{
       grid_w.resize(gsz);
       fill(grid_w.begin(), grid_w.end(),1.); //already divided by the box volume
       
+      sgrid.resize(gsz); //normalized grid vector
+
       //log check
       
       log.printf("gridsize:\t%d\n",gsz);
+
+      //if RANDOM, generate random grid
+      parseFlag("RANDOMGRID",randomgrid);
+      if(randomgrid){ //random insertion grid
+	log.printf("Random distributed insertion points\n");
+	double r1,r2,r3;
+	for(i=0; i<gsz; i++){
+	  r1=static_cast <float> (rand()) / static_cast <float> (RAND_MAX+1.);
+	  r2=static_cast <float> (rand()) / static_cast <float> (RAND_MAX+1.);
+	  r3=static_cast <float> (rand()) / static_cast <float> (RAND_MAX+1.);
+	  sgrid[i]=Vector(r1,r2,r3);
+	}
+      }else{ //regular grid
+	log.printf("Regularly distributed insertion points: %d X %d X %d\n",griddim[0],griddim[1],griddim[2]);
+	for(i=0; i<griddim[0]; ++i){
+	  for(j=0; j<griddim[1]; ++j){
+	    for(k=0; k<griddim[2]; ++k){
+	      index=griddim[1]*griddim[2]*i+griddim[2]*j+k; //index
+	      sgrid[i]=Vector(di[0]*i,di[1]*j,di[2]*k);
+	    }
+	  }
+	}
+      }
+      parseFlag("WIDOM",widom);
+      if(widom){
+	log.printf("Widom flag is active, random insertion grid generated at each step\n");
+	log.printf("WARNING: No bias force calculation\n");
+      }
 
       //INSERTION MOLECULE INPUT
       
@@ -752,26 +787,36 @@ namespace PLMD{
       ze.zero();
       //init derivatives
       fill(deriv.begin(), deriv.end(), ze);
-      
-      //gridpoints
 
-      for(i=0; i<griddim[0]; ++i){
-	for(j=0; j<griddim[1]; ++j){
-	  for(k=0; k<griddim[2]; ++k){
-	    index=griddim[1]*griddim[2]*i+griddim[2]*j+k; //index
-	    gs=Vector(di[0]*i,di[1]*j,di[2]*k);
-	    xgrid[index]=matmul(transpose(getBox()),gs);
-	    //fdbg<<setprecision(10);
-	    //fdbg<< xgrid[index][0]<<"\t"<< xgrid[index][1]<<"\t"<< xgrid[index][2]<<endl;
-	  }
+      //gridpoints (random or regular)
+      
+      if(widom){ //generate random insertion grid every step
+	double r1,r2,r3;
+	for(i=0; i<gsz; i++){
+	  r1=static_cast <float> (rand()) / static_cast <float> (RAND_MAX+1.);
+	  r2=static_cast <float> (rand()) / static_cast <float> (RAND_MAX+1.);
+	  r3=static_cast <float> (rand()) / static_cast <float> (RAND_MAX+1.);
+	  sgrid[i]=Vector(r1,r2,r3);
 	}
       }
+
+
+      for(i=0; i<gsz; ++i) xgrid[i]=matmul(transpose(getBox()),sgrid0[i]);
+
      
       //create neigh lists  
       
-      if(dulist.step==0) newlist(xgrid,dulist);
+      if(dulist.step==0){
+	newlist(xgrid,dulist);
+      }else{
+	if(widom){ //no checklist for widom
+	  newlist(xgrid,dulist);
+	}else{
+	  checklist(xgrid,dulist);
+	}
+      }
       ++dulist.step; 
-      checklist(xgrid,dulist);
+
       
       double Su=0;
       double Du,modrkj,modq,zu,fDu,dfDu, ph;
@@ -894,10 +939,12 @@ namespace PLMD{
 	
 	  //derivatives -- cycle again over neighbors
 	  //CHANGE cycle on all atoms of the neighborhood list
-	  for(j=0; j < dulist.nn[i]; ++j){
-	    atomid = dulist.ni[i][j]; //atomindex
-	    deriv[atomid]+=dSoV*phiprime[j];
-	    virial-=dSoV*phit[j]; //Tensor(phiprime[j],rkj); //Virial component
+	  if(!widom){ //derivatives are not used
+	    for(j=0; j < dulist.nn[i]; ++j){
+	      atomid = dulist.ni[i][j]; //atomindex
+	      deriv[atomid]+=dSoV*phiprime[j];
+	      virial-=dSoV*phit[j]; //Tensor(phiprime[j],rkj); //Virial component
+	    }
 	  }
 	}
 	vector<Vector>().swap(phiprime);
