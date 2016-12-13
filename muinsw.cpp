@@ -93,6 +93,10 @@ namespace PLMD{
       vector<string> sp_ins;
       // verlet list structure
       
+      //WIDOM & RANDOM grid
+      bool randomgrid,widom;      
+      vector<Vector> sgrid;
+
       struct  dulist_s{
 	
 	double rcut;
@@ -157,7 +161,8 @@ namespace PLMD{
       keys.add("optional","ROTATE","Angle file containing the rotations for the test insertion of the molecule.");
       keys.add("optional","NRAN","Numer of randomly generated rotations per grid point (default NRAN = 1).");
       keys.addFlag("RIGID",false,"The distances in inserted vector are rigid"); 
-
+      keys.addFlag("RANDOMGRID",false,"random uniform grid.");
+      keys.addFlag("WIDOM",false,"generates a random uniform grid.");
       keys.remove("NOPBC");
     }
     
@@ -185,9 +190,46 @@ namespace PLMD{
       grid_w.resize(gsz);
       fill(grid_w.begin(), grid_w.end(),1.); //already divided by the box volume
       
+      sgrid.resize(gsz); //normalized grid vector
+
       //log check
       
       log.printf("gridsize:\t%d\n",gsz);
+
+      //if RANDOM, generate random grid
+      parseFlag("RANDOMGRID",randomgrid);
+      if(randomgrid){ //random insertion grid
+        srand((unsigned)time(0));
+	log.printf("Random distributed insertion points\n");
+	double r1,r2,r3;
+	for(int i=0; i<gsz; i++){
+	  r1=static_cast <float> (rand()) / static_cast <float> (RAND_MAX+1.);
+	  r2=static_cast <float> (rand()) / static_cast <float> (RAND_MAX+1.);
+	  r3=static_cast <float> (rand()) / static_cast <float> (RAND_MAX+1.);
+	  sgrid[i]=Vector(r1,r2,r3);
+	}
+      }else{ //regular grid
+	log.printf("Regularly distributed insertion points: %d X %d X %d\n",griddim[0],griddim[1],griddim[2]);
+        int index;
+        Vector di;
+        for(int i=0;i<3;++i){
+           di[i]=1./(1.*griddim[i]); //grid2 pace
+        }
+	for(int i=0; i<griddim[0]; ++i){
+	  for(int j=0; j<griddim[1]; ++j){
+	    for(int k=0; k<griddim[2]; ++k){
+	      index=griddim[1]*griddim[2]*i+griddim[2]*j+k; //index
+	      sgrid[index]=Vector(di[0]*i,di[1]*j,di[2]*k);
+	    }
+	  }
+	}
+      }
+      parseFlag("WIDOM",widom);
+      if(widom){
+        srand((unsigned)time(0));
+	log.printf("Widom flag is active, random insertion grid generated at each step\n");
+	log.printf("WARNING: No bias force calculation\n");
+      }
 
       //INSERTION MOLECULE INPUT
       
@@ -244,17 +286,17 @@ namespace PLMD{
       string inang;
       parse("ROTATE",inang);
       if(inang == "random"){
-         random_rot = true;
+        srand48((unsigned)time(0));
+        random_rot = true;
         // Generate random Euler angles according to Kuffner. J, Proc.2004 IEEE In'l Conf. on Robotics and Automation (ICRA 2004)
-        Nran = 1;
-        parse("NRAN",Nran);
-        Nrot = Nran*gsz;
+        Nconf = 1;
+        parse("NRAN",Nconf);
+        Nrot = Nconf*gsz;
         for(int i=0; i<Nrot; i++){
            Vector theta;
-           log.printf("PI in PLUMED = %.4f \t Random number = %.4f \n", M_PI, drand48());
            theta[0] = 2.0*M_PI*drand48()-M_PI;
            theta[1] = acos(1.0-2.0*drand48())+M_PI/2.0;
-           if(rand() < 0.5){
+           if(drand48() < 0.5){
              if(theta[1] < M_PI){
                theta[1] = theta[1]+M_PI;
              }else{
@@ -285,10 +327,10 @@ namespace PLMD{
 	  }
           inangles.close();
         }
+        Nconf=Nrot+1; //original configuration plus rotations
       }
       
       //CHANGE automatic generation of rotations & random generation (for WIDOM)
-      Nconf=Nrot+1; //original configuration plus rotations
       //ROTATE ins_r
       if(Nrot>0){
 	for(int i=0; i<Nrot; i++){
@@ -674,6 +716,8 @@ namespace PLMD{
     
     // verlet list formation
     //CHANGE cycle on molecule number (???)    
+    
+
 
     void muinsw::newlist(vector<Vector> &grid, dulist_s &dulist)
     {
@@ -726,6 +770,7 @@ namespace PLMD{
       }
     } 
     
+
     // calculator
     void muinsw::calculate()    
     {
@@ -753,7 +798,8 @@ namespace PLMD{
       }
       
       if(dulist.step==0 && !rigid){ //pbc on insertion vectors
-	for(i=0;i<Nconf*Nat;i++){
+	//for(i=0;i<Nconf*Nat;i++){
+	for(i=0;i<Nrot*Nat;i++){
 	  ins_s.push_back(getPbc().realToScaled(ins_r[i])); //scaled points
 	  //fdbg<< i << "\t" << ins_s[i][0] <<"\t"<< ins_s[i][1]<<"\t"<< ins_s[i][2]<<endl;
 	  //for(j=0;j<3;j++) ins_s[i][j]=Tools::pbc(ins_s[i][j]); //within PBC
@@ -780,25 +826,29 @@ namespace PLMD{
       ze.zero();
       //init derivatives
       fill(deriv.begin(), deriv.end(), ze);
-      
-      //gridpoints
 
-      for(i=0; i<griddim[0]; ++i){
-	for(j=0; j<griddim[1]; ++j){
-	  for(k=0; k<griddim[2]; ++k){
-	    index=griddim[1]*griddim[2]*i+griddim[2]*j+k; //index
-	    gs=Vector(di[0]*i,di[1]*j,di[2]*k);
-	    xgrid[index]=matmul(transpose(getBox()),gs);
-	    //fdbg<<setprecision(10);
-	    //fdbg<< xgrid[index][0]<<"\t"<< xgrid[index][1]<<"\t"<< xgrid[index][2]<<endl;
-	  }
+      //gridpoints (random or regular)
+      
+      if(widom){ //generate random insertion grid every step
+	double r1,r2,r3;
+	for(i=0; i<gsz; i++){
+	  r1=static_cast <float> (rand()) / static_cast <float> (RAND_MAX+1.);
+	  r2=static_cast <float> (rand()) / static_cast <float> (RAND_MAX+1.);
+	  r3=static_cast <float> (rand()) / static_cast <float> (RAND_MAX+1.);
+	  sgrid[i]=Vector(r1,r2,r3);
 	}
       }
 
       if(dulist.step==0){
+        for(i=0; i<gsz; ++i){ 
+           xgrid[i]=matmul(transpose(getBox()),sgrid[i]);
+        }
+      }
+
+      if(dulist.step==0){
         if(random_rot){
-          log.printf("Nran :\t%d\n",Nran);
-          for(c=0; c<Nran; c++){
+          log.printf("Nconf :\t%d\n",Nconf);
+          for(c=0; c<Nconf; c++){
              std::ostringstream fn;
              fn << "Grid_" << c+1 << ".xyz";
              ofstream grid_conf;
@@ -841,49 +891,22 @@ namespace PLMD{
              grid_conf.close();
           }
         }
-      }else{
-        if(random_rot){
-          for(c=0; c<Nran; c++){
-             for(i=0; i<gsz; ++i){
-                for(k=0; k<Nat; ++k){
-                   Vector ins_test;
-                   if(rigid) {
-                     ins_test=xgrid[i]+ins_r[k+i*Nat+c*gsz*Nat]; //insertion vector (rigid)
-                   }else{
-                     ins_test=xgrid[i]+getPbc().scaledToReal(ins_s[k+i*Nat+c*gsz*Nat]); //insertion vector (scaled)
-                   }
-                }
-             }
-          }
-        }else{
-          for(c=0; c<Nconf; c++){
-             for(i=0; i<gsz; ++i){
-                for(k=0; k<Nat; ++k){
-                   Vector ins_test;
-                   if(rigid) {
-                     ins_test=xgrid[i]+ins_r[k+c*Nat]; //insertion vector (rigid)
-                   }else{
-                     ins_test=xgrid[i]+getPbc().scaledToReal(ins_s[k+c*Nat]); //insertion vector (scaled)
-                   }
-                }
-             }
-          }
-        }
       }
-
-
-
-
-
-
-
 
 
       //create neigh lists  
       
-      if(dulist.step==0) newlist(xgrid,dulist);
+      if(dulist.step==0){
+	newlist(xgrid,dulist);
+      }else{
+	if(widom){ //no checklist for widom
+	  newlist(xgrid,dulist);
+	}else{
+	  checklist(xgrid,dulist);
+	}
+      }
       ++dulist.step; 
-      checklist(xgrid,dulist);
+
       
       double Su=0;
       double Du,modrkj,modq,zu,fDu,dfDu, ph;
@@ -915,11 +938,20 @@ namespace PLMD{
 	    if(beta*Du>coff_Du)   break; //speed up calculation (it might introduce an error)
 	    
 	    Vector insx;
-	    if(rigid) {
-	      insx=xgrid[i]+ins_r[k+c*Nat]; //insertion vector (rigid)
-	    }else{
-	      insx=xgrid[i]+getPbc().scaledToReal(ins_s[k+c*Nat]); //insertion vector (scaled)
-	    }
+ 
+            if(random_rot){
+              if(rigid) {
+                insx=xgrid[i]+ins_r[k+i*Nat+c*gsz*Nat]; //insertion vector (rigid)
+              }else{
+                insx=xgrid[i]+getPbc().scaledToReal(ins_s[k+i*Nat+c*gsz*Nat]); //insertion vector (scaled)
+              }
+            }else{
+              if(rigid) {
+                insx=xgrid[i]+ins_r[k+c*Nat]; //insertion vector (rigid)
+              }else{
+                insx=xgrid[i]+getPbc().scaledToReal(ins_s[k+c*Nat]); //insertion vector (scaled)
+              }
+            }
 	    
 	    //fdbg2<<setprecision(10);
 	    //fdbg2<< insx[0]<<"\t"<< insx[1]<<"\t"<< insx[2]<<endl;
@@ -1006,10 +1038,12 @@ namespace PLMD{
 	
 	  //derivatives -- cycle again over neighbors
 	  //CHANGE cycle on all atoms of the neighborhood list
-	  for(j=0; j < dulist.nn[i]; ++j){
-	    atomid = dulist.ni[i][j]; //atomindex
-	    deriv[atomid]+=dSoV*phiprime[j];
-	    virial-=dSoV*phit[j]; //Tensor(phiprime[j],rkj); //Virial component
+	  if(!widom){ //derivatives are not used
+	    for(j=0; j < dulist.nn[i]; ++j){
+	      atomid = dulist.ni[i][j]; //atomindex
+	      deriv[atomid]+=dSoV*phiprime[j];
+	      virial-=dSoV*phit[j]; //Tensor(phiprime[j],rkj); //Virial component
+	    }
 	  }
 	}
 	vector<Vector>().swap(phiprime);
